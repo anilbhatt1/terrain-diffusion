@@ -610,8 +610,10 @@ DATASET_NAME_MAPPING = {}
 
 
 def main():
+    print(f'About to parse args')
     args = parse_args()
     logging_dir = Path(args.output_dir, args.logging_dir)
+    print(f'logging_dir : {logging_dir}')
 
     accelerator_project_config = ProjectConfiguration(
         project_dir=args.output_dir, logging_dir=logging_dir
@@ -659,22 +661,27 @@ def main():
     noise_scheduler = DDPMScheduler.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="scheduler"
     )
+    print(f'noise_scheduler done')
     tokenizer = CLIPTokenizer.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="tokenizer",
         revision=args.revision,
     )
+    print(f'tokenizer done')
     text_encoder = CLIPTextModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="text_encoder",
         revision=args.revision,
     )
+    print(f'text_encoder done')
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision
     )
+    print(f'vae done')
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
     )
+    print(f'unet done')
     # freeze parameters of models to save more memory
     unet.requires_grad_(False)
     vae.requires_grad_(False)
@@ -685,8 +692,10 @@ def main():
     # as these weights are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
     if accelerator.mixed_precision == "fp16":
+        print(f'torch.float16 set')
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
+        print(f'torch.bfloat16 set')
         weight_dtype = torch.bfloat16
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
@@ -707,6 +716,7 @@ def main():
     # - up blocks (2x attention layers) * (3x transformer layers) * (3x down blocks) = 18
     # => 32 layers
 
+    print(f'setting lora_attn_procs using unet.config : {unet.config}')
     # Set correct lora layers
     lora_attn_procs = {}
     for name in unet.attn_processors.keys():
@@ -729,8 +739,9 @@ def main():
             cross_attention_dim=cross_attention_dim,
             rank=args.rank,
         )
-
+    print(f'lora_attn_procs built : {lora_attn_procs}')
     unet.set_attn_processor(lora_attn_procs)
+    print(f'unet.set_attn_processor using lora_attn_procs done')
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -776,7 +787,7 @@ def main():
         return snr
 
     lora_layers = AttnProcsLayers(unet.attn_processors)
-
+    print(f'lora_layers populated')
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     if args.allow_tf32:
@@ -802,7 +813,7 @@ def main():
         optimizer_cls = bnb.optim.AdamW8bit
     else:
         optimizer_cls = torch.optim.AdamW
-
+    print(f'optimizer_cls : {optimizer_cls}')
     optimizer = optimizer_cls(
         lora_layers.parameters(),
         lr=args.learning_rate,
@@ -839,9 +850,10 @@ def main():
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
     column_names = dataset["train"].column_names
-
+    print(f'column_names : {column_names}')
     # 6. Get the column names for input/target.
     dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
+    print(f'dataset_columns : {dataset_columns}')
     if args.image_column is None:
         image_column = (
             dataset_columns[0] if dataset_columns is not None else column_names[0]
@@ -952,12 +964,14 @@ def main():
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
+    print(f'train_dataloader created')
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
     )
+    print(f'num_update_steps_per_epoch : {num_update_steps_per_epoch}')
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -973,7 +987,7 @@ def main():
     lora_layers, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         lora_layers, optimizer, train_dataloader, lr_scheduler
     )
-
+    print(f'prepared everything with accelerator')
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
@@ -994,7 +1008,7 @@ def main():
         * accelerator.num_processes
         * args.gradient_accumulation_steps
     )
-
+    print(f'total_batch_size : {total_batch_size}')
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
@@ -1042,6 +1056,7 @@ def main():
     progress_bar.set_description("Steps")
 
     for epoch in range(first_epoch, args.num_train_epochs):
+        print(f'training epoch # {epoch}')
         unet.train()
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
